@@ -1,0 +1,77 @@
+version: "3.9"
+
+# ------------------------------------------------------------
+# Stack completa para a VPS Contabo 12GB (4-6 vCPU, NVMe).
+#
+# Dica de memoria (12GB total):
+#  - SO + stack base ..............  ~3.0 GB
+#  - ollama (um modelo 8B Q4) ......  ~6.5 GB
+#  - qdrant ........................  ~0.6 GB
+#  - krato-ai (node)  ..............  ~0.3 GB
+#  - folga para kernel/logs .........  resto
+# Mantenha UM modelo carregado por vez (OLLAMA_KEEP_ALIVE=-1) e configure
+# os agentes para evitar troca constante. Tarefas pesadas sao delegadas
+# a nuvem via CLOUD_* no .env.
+# ------------------------------------------------------------
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: krato-ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: "-1"
+      OLLAMA_NUM_THREAD: "6"
+      OLLAMA_FLASH_ATTENTION: "1"
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: krato-qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+    ports:
+      - "127.0.0.1:6333:6333"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  krato-ai:
+    build: .
+    container_name: krato-ai
+    restart: unless-stopped
+    depends_on:
+      - ollama
+      - qdrant
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      QDRANT_URL: http://qdrant:6333
+      HOST: 0.0.0.0
+      PORT: 7070
+      KRATO_DATA_DIR: /app/data
+      KRATO_DB_PATH: /app/data/krato.db
+    env_file:
+      - .env
+    volumes:
+      - krato-data:/app/data
+    ports:
+      # Exponha APENAS via Tailscale/VPN em producao. Para dev local, OK.
+      - "127.0.0.1:7070:7070"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+volumes:
+  ollama-data:
+  qdrant-data:
+  krato-data:
