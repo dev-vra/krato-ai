@@ -1,0 +1,97 @@
+name: Deploy to Contabo VPS
+
+on:
+  push:
+    branches:
+      - main
+      - claude/ai-system-generator-ollama-OU6SP
+  workflow_dispatch:
+    inputs:
+      skip_models:
+        description: "Pular download de modelos Ollama (deploy rapido)"
+        type: boolean
+        default: true
+      force_recreate:
+        description: "Recriar containers (docker compose up --force-recreate)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: vps-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate secrets
+        run: |
+          missing=()
+          [ -z "${{ secrets.VPS_HOST }}" ]    && missing+=("VPS_HOST")
+          [ -z "${{ secrets.VPS_USER }}" ]    && missing+=("VPS_USER")
+          [ -z "${{ secrets.VPS_SSH_KEY }}" ] && missing+=("VPS_SSH_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Secrets faltando: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          command_timeout: 25m
+          script_stop: true
+          envs: GIT_REF,SKIP_MODELS,FORCE_RECREATE
+          script: |
+            set -euo pipefail
+
+            REPO_DIR="$HOME/krato-ai"
+            GIT_REF="${{ github.sha }}"
+            SKIP_MODELS="${{ github.event.inputs.skip_models || 'true' }}"
+            FORCE_RECREATE="${{ github.event.inputs.force_recreate || 'false' }}"
+
+            echo ">> sha alvo: $GIT_REF"
+            echo ">> diretorio: $REPO_DIR"
+
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              echo "::error::VPS nao inicializada. Rode vps-bootstrap.sh primeiro."
+              exit 1
+            fi
+
+            cd "$REPO_DIR"
+            git fetch --all --prune
+            git checkout "$GIT_REF"
+
+            # Exporta secrets para o deploy script (.env e ja persistido na VPS)
+            export FORCE_RECREATE SKIP_MODELS
+            bash scripts/vps-deploy.sh
+
+      - name: Health check
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          command_timeout: 2m
+          script: |
+            set -e
+            for i in 1 2 3 4 5; do
+              if curl -fsS http://127.0.0.1:7070/health; then
+                echo ""
+                echo "::notice::API respondendo OK"
+                exit 0
+              fi
+              echo "tentativa $i falhou, aguardando 5s..."
+              sleep 5
+            done
+            echo "::error::API nao respondeu apos 5 tentativas"
+            docker compose -f "$HOME/krato-ai/docker-compose.yml" logs --tail 200 krato-ai
+            exit 1

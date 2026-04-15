@@ -72,6 +72,10 @@ Veja [`src/execution/policy.ts`](src/execution/policy.ts) e
 
 ## Setup rápido
 
+> Rota recomendada: **GitHub Actions + SSH** — veja
+> [`docs/deploy-github-actions.md`](docs/deploy-github-actions.md) para o
+> passo-a-passo auditado ponta-a-ponta. O resumo manual está abaixo.
+
 ### 1. Na VPS Contabo
 
 ```bash
