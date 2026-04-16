@@ -1,0 +1,83 @@
+version: "3.9"
+
+# ------------------------------------------------------------
+# Docker Compose para backup automático do Krato-AI
+# Configure backups agendados via cron no host
+# ------------------------------------------------------------
+
+services:
+  # Backup service - executa backup dos dados
+  backup:
+    image: alpine:latest
+    container_name: krato-backup
+    volumes:
+      - /workspace:/workspace
+      - krato-backups:/backups
+    environment:
+      - KRATO_BACKUP_DIR=/backups
+      - KRATO_DATA_DIR=/workspace/data
+      - KRATO_MAX_BACKUPS=7
+    working_dir: /workspace
+    command: >
+      sh -c "
+        echo '💾 Iniciando backup...' &&
+        mkdir -p /backups &&
+        TIMESTAMP=\$$(date +%Y%m%d_%H%M%S) &&
+        cp /workspace/data/krato.db /backups/krato-\$$TIMESTAMP.db &&
+        tar -czf /backups/krato-backup-\$$TIMESTAMP.tar.gz -C /workspace data &&
+        echo '✅ Backup concluído: /backups/krato-backup-\$$TIMESTAMP.tar.gz' &&
+        ls -lh /backups/*.tar.gz | tail -5
+      "
+    profiles:
+      - backup
+
+  # Restore service - restaura backup específico
+  restore:
+    image: alpine:latest
+    container_name: krato-restore
+    volumes:
+      - /workspace:/workspace
+      - krato-backups:/backups
+    environment:
+      - BACKUP_FILE=${BACKUP_FILE:-}
+    working_dir: /workspace
+    command: >
+      sh -c "
+        if [ -z '\$$BACKUP_FILE' ]; then
+          echo '❌ Erro: BACKUP_FILE não especificado. Use: docker compose --profile backup run -e BACKUP_FILE=krato-backup-20240115_020000.tar.gz restore'
+          exit 1
+        fi
+        echo '🔄 Restaurando backup: \$$BACKUP_FILE' &&
+        rm -rf /workspace/data/* &&
+        tar -xzf /backups/\$$BACKUP_FILE -C /workspace &&
+        echo '✅ Backup restaurado com sucesso!'
+      "
+    profiles:
+      - backup
+
+volumes:
+  krato-backups:
+    driver: local
+    driver_opts:
+      type: none
+      device: /workspace/backups
+      o: bind
+
+# ------------------------------------------------------------
+# Uso:
+# 
+# Executar backup manual:
+#   docker compose --profile backup run backup
+#
+# Listar backups disponíveis:
+#   docker compose --profile backup run backup sh -c "ls -lh /backups/*.tar.gz"
+#
+# Restaurar backup específico:
+#   docker compose --profile backup run -e BACKUP_FILE=krato-backup-20240115_020000.tar.gz restore
+#
+# Agendar backup diário (no host, via cron):
+#   0 2 * * * docker compose --profile backup run backup >> /var/log/krato-backup.log 2>&1
+#
+# Ou usar o script bash:
+#   ./scripts/backup/auto-backup.sh
+# ------------------------------------------------------------

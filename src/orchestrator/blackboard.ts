@@ -34,4 +34,8 @@ export class Blackboard {
   snapshot(): { artifacts: Artifact[] } {
     return { artifacts: this.all() };
   }
+
+  clear(): void {
+    this.artifacts = [];
+  }
 }

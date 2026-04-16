@@ -8,6 +8,7 @@ import { QAAgent } from "../agents/qa.js";
 import { globalMemory } from "../memory/global.js";
 import { logger } from "../utils/logger.js";
 import { Blackboard } from "./blackboard.js";
+import { eventBus } from "../api/event-bus.js";
 
 export interface RunOptions {
   actorId: string;
@@ -92,7 +93,11 @@ export class Orchestrator {
       while (current !== "done" && iter < maxIter) {
         iter++;
         const agent = this.agents[current];
-        options.onEvent?.({ sessionId, agent: current, kind: "start" });
+        
+        // Publica evento de inicio via event bus
+        const startEvent = { sessionId, agent: current, kind: "start" as const };
+        options.onEvent?.(startEvent);
+        eventBus.publish({ ...startEvent, type: `agent_${current}_start`, timestamp: new Date().toISOString() });
 
         let result: AgentResult;
         try {
@@ -100,7 +105,11 @@ export class Orchestrator {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           logger.error({ err, agent: current }, "agent crashed");
-          options.onEvent?.({ sessionId, agent: current, kind: "error", error: message });
+          
+          const errorEvent = { sessionId, agent: current, kind: "error" as const, error: message };
+          options.onEvent?.(errorEvent);
+          eventBus.publish({ ...errorEvent, type: `agent_${current}_error`, data: { message }, timestamp: new Date().toISOString() });
+          
           globalMemory.logEvent(sessionId, current, "error", { message });
           globalMemory.endSession(sessionId, "failed");
           return {
@@ -112,21 +121,27 @@ export class Orchestrator {
           };
         }
 
-        options.onEvent?.({
+        // Publica evento de conclusao do agente
+        const finishEvent = {
           sessionId,
           agent: current,
-          kind: "finish",
+          kind: "finish" as const,
           summary: result.summary,
           next: result.nextAgent,
-        });
+        };
+        options.onEvent?.(finishEvent);
+        eventBus.publish({ ...finishEvent, type: `agent_${current}_finish`, data: { summary: result.summary, next: result.nextAgent }, timestamp: new Date().toISOString() });
 
         if (result.nextAgent && result.nextAgent !== "done") {
-          options.onEvent?.({
+          const handoffEvent = {
             sessionId,
             agent: current,
-            kind: "handoff",
+            kind: "handoff" as const,
             next: result.nextAgent,
-          });
+          };
+          options.onEvent?.(handoffEvent);
+          eventBus.publish({ ...handoffEvent, type: `handoff_${current}_to_${result.nextAgent}`, timestamp: new Date().toISOString() });
+          
           current = result.nextAgent;
           lastInput = result.summary;
           continue;
@@ -142,6 +157,18 @@ export class Orchestrator {
       await globalMemory.distill(options.actorId, transcript);
 
       const status = iter >= maxIter && current !== "done" ? "max-iterations" : "completed";
+      const finalSummary = status === "completed"
+        ? `Projeto ${projectId} concluido com sucesso apos ${iter} passos.`
+        : `Pipeline atingiu ${maxIter} iteracoes sem convergencia.`;
+      
+      // Publica evento final
+      eventBus.publish({
+        sessionId,
+        type: "run_completed",
+        timestamp: new Date().toISOString(),
+        data: { status, iterations: iter, summary: finalSummary }
+      });
+      
       globalMemory.endSession(sessionId, status === "max-iterations" ? "failed" : "completed");
 
       return {
@@ -149,10 +176,7 @@ export class Orchestrator {
         projectId,
         status,
         blackboard: bb,
-        summary:
-          status === "completed"
-            ? `Projeto ${projectId} concluido com sucesso apos ${iter} passos.`
-            : `Pipeline atingiu ${maxIter} iteracoes sem convergencia.`,
+        summary: finalSummary,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

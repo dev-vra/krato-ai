@@ -1,5 +1,6 @@
 import cors from "@fastify/cors";
 import sensible from "@fastify/sensible";
+import staticFiles from "@fastify/static";
 import Fastify from "fastify";
 import { z } from "zod";
 import { env } from "../config/env.js";
@@ -10,6 +11,9 @@ import { globalMemory, type GlobalFact } from "../memory/global.js";
 import { qdrant } from "../memory/vector.js";
 import { orchestrator, type OrchestratorEvent } from "../orchestrator/graph.js";
 import { logger } from "../utils/logger.js";
+import { personalAgent } from "../agents/personal.js";
+import { startTelegramBot } from "../telegram/bot.js";
+import { eventBus } from "./event-bus.js";
 
 const runSchema = z.object({
   actorId: z.string().min(1),
@@ -33,6 +37,10 @@ export async function buildServer() {
   const app = Fastify({ logger: false });
   await app.register(cors, { origin: true });
   await app.register(sensible);
+  await app.register(staticFiles, {
+    root: "/workspace/src/ui",
+    prefix: "/ui/",
+  });
 
   app.get("/health", async () => {
     const [ol, q, mc] = await Promise.all([
@@ -86,11 +94,46 @@ export async function buildServer() {
   });
 
   app.get("/runs/:sessionId/stream", async (req, reply) => {
-    // SSE placeholder — implementacao mais elaborada exigiria broker.
-    // Aqui documentamos o contrato para o consumidor (CLI/UI).
-    reply
-      .code(501)
-      .send({ error: "streaming sera implementado com um broker (Redis/NATS)" });
+    const { sessionId } = req.params as { sessionId: string };
+    
+    // Configura headers para SSE
+    reply.header("Content-Type", "text/event-stream");
+    reply.header("Cache-Control", "no-cache");
+    reply.header("Connection", "keep-alive");
+    reply.header("X-Accel-Buffering", "no");
+
+    // Envia evento inicial de conexao
+    reply.send(`data: ${JSON.stringify({ type: "connected", sessionId, timestamp: new Date().toISOString() })}\n\n`);
+
+    // Inscreve cliente no event bus
+    const unsubscribe = eventBus.subscribe(
+      sessionId,
+      (event) => {
+        try {
+          reply.send(`data: ${JSON.stringify(event)}\n\n`);
+        } catch (err) {
+          logger.warn({ sessionId, error: err }, "client disconnected");
+          unsubscribe();
+        }
+      },
+      () => {
+        logger.info({ sessionId }, "client unsubscribed from stream");
+      }
+    );
+
+    // Limpa inscricao quando cliente desconecta
+    reply.raw.on("close", () => {
+      unsubscribe();
+      logger.info({ sessionId }, "SSE connection closed");
+    });
+
+    // Timeout apos 5 minutos sem atividade
+    const timeout = setTimeout(() => {
+      reply.send(`data: ${JSON.stringify({ type: "timeout", sessionId, timestamp: new Date().toISOString() })}\n\n`);
+      unsubscribe();
+    }, 5 * 60 * 1000);
+
+    reply.raw.on("close", () => clearTimeout(timeout));
   });
 
   // ---- Memoria global ----
@@ -107,10 +150,56 @@ export async function buildServer() {
     return created satisfies GlobalFact;
   });
 
+  // ---- Agente Pessoal (API) ----
+  app.post("/personal/run", async (req) => {
+    const { actorId, input } = z.object({
+      actorId: z.string().min(1),
+      input: z.string().min(1),
+    }).parse(req.body);
+
+    const result = await personalAgent.run(
+      {
+        sessionId: `api-${Date.now()}`,
+        actorId,
+        projectId: "personal",
+        goal: "assistir usuario em tarefas pessoais",
+        blackboard: { publish: () => {}, all: () => [] } as any,
+      },
+      input
+    );
+
+    return result;
+  });
+
+  // ---- UI Dashboard ----
+  app.get("/dashboard", async (req, reply) => {
+    return reply.sendFile("dashboard.html");
+  });
+
+  // Servir dashboard como fallback para /ui/
+  app.get("/ui/", async (req, reply) => {
+    return reply.sendFile("dashboard.html");
+  });
+
+  // ---- Endpoint para buscar execuções ----
+  app.get("/runs", async (req) => {
+    // Em produção, buscaria do banco de dados
+    // Retorna lista vazia por enquanto
+    return { runs: [] };
+  });
+
   return app;
 }
 
 const app = await buildServer();
+
+// Inicia bot do Telegram se configurado
+if (env.TELEGRAM_BOT_TOKEN) {
+  startTelegramBot().catch((err) => {
+    logger.error(err, "Failed to start Telegram bot");
+  });
+}
+
 app.listen({ port: env.PORT, host: env.HOST }).then(() => {
   logger.info({ port: env.PORT, host: env.HOST }, "krato-ai api online");
 });

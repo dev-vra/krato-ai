@@ -77,7 +77,7 @@ Se a suite passou e a cobertura e adequada, passed=true e vetores vazios.`,
 
     if (!report.passed) {
       const feedback = [
-        ...report.failures.map((f) => `- ${f.test ?? f.file ?? "?"}: ${f.message}`),
+        ...report.failures.map((f) => `- ${"file" in f && f.file ? f.file : "test" in f && f.test ? f.test : "?"}: ${f.message}`),
         ...report.suggestions.map((s) => `- sugestao: ${s}`),
       ].join("\n");
       ctx.blackboard.publish({

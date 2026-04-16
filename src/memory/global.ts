@@ -120,6 +120,16 @@ export class GlobalMemory {
     return row;
   }
 
+  /** Adiciona fato de forma simplificada para uso direto */
+  addSimpleFact(actorId: string, text: string): GlobalFact {
+    return this.addFact({
+      actorId,
+      kind: "lesson",
+      text,
+      confidence: 0.8,
+    });
+  }
+
   touchFact(id: string): void {
     this.db
       .prepare(
