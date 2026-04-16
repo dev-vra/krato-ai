@@ -1,0 +1,63 @@
+version: "3.9"
+
+# ------------------------------------------------------------
+# Docker Compose para ferramentas de segurança no Krato-AI
+# Execute scans periódicos para detectar secrets e vulnerabilidades
+# ------------------------------------------------------------
+
+services:
+  # Gitleaks - Detecção de secrets em repositórios
+  gitleaks:
+    image: zricethezav/gitleaks:latest
+    container_name: krato-gitleaks
+    volumes:
+      - /workspace:/path
+    command: detect --source /path --report-path /path/security-reports/gitleaks-report.json --report-format json
+    profiles:
+      - security
+
+  # TruffleHog - Detecção avançada de credentials
+  trufflehog:
+    image: trufflesecurity/trufflehog:latest
+    container_name: krato-trufflehog
+    volumes:
+      - /workspace:/pwd
+    command: filesystem /pwd --json --only-verified
+    profiles:
+      - security
+
+  # Scan completo (executa ambos)
+  security-scan:
+    image: alpine:latest
+    container_name: krato-security-scan
+    volumes:
+      - /workspace:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: /workspace
+    command: >
+      sh -c "
+        echo '🔒 Iniciando Security Scan...' &&
+        docker run --rm -v /workspace:/path zricethezav/gitleaks:latest detect --source /path --report-path /path/security-reports/gitleaks-\$$(date +%Y%m%d_%H%M%S).json &&
+        echo '✅ Gitleaks concluído' &&
+        docker run --rm -v /workspace:/pwd trufflesecurity/trufflehog:latest filesystem /pwd --only-verified --json > /workspace/security-reports/trufflehog-\$$(date +%Y%m%d_%H%M%S).json &&
+        echo '✅ TruffleHog concluído' &&
+        echo '🎉 Security Scan completo!'
+      "
+    profiles:
+      - security
+
+# ------------------------------------------------------------
+# Uso:
+# 
+# Executar scan com Gitleaks:
+#   docker compose --profile security run gitleaks
+#
+# Executar scan com TruffleHog:
+#   docker compose --profile security run trufflehog
+#
+# Executar scan completo:
+#   docker compose --profile security run security-scan
+#
+# Ou usar o script bash:
+#   ./scripts/security/security-scanner.sh
+# ------------------------------------------------------------

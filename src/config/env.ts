@@ -36,6 +36,15 @@ const schema = z.object({
   MCP_TOKEN: z.string().default(""),
   MCP_WORKSPACE: z.string().default("~/workspace/krato-projects"),
   MCP_REQUIRE_APPROVAL: bool.default(true),
+
+  TELEGRAM_BOT_TOKEN: z.string().optional().default(""),
+  TELEGRAM_ADMIN_ID: z.coerce.number().optional(),
+  OPENAI_API_KEY: z.string().optional().default(""),
+  GOOGLE_APPLICATION_CREDENTIALS: z.string().optional().default(""),
+  GOOGLE_TTS_API_KEY: z.string().optional().default(""),
+  AZURE_SPEECH_KEY: z.string().optional().default(""),
+  PIPER_MODEL_PATH: z.string().optional().default("/opt/piper/models/pt_BR-faber-medium.onnx"),
+  OLLAMA_BASE_URL: z.string().default("http://127.0.0.1:11434"),
 });
 
 export type Env = z.infer<typeof schema>;
