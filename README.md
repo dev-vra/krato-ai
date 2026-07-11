@@ -1,192 +1,102 @@
-# Krato-AI
+# Kratos
 
-Rede multi-agente de IA para desenvolvimento full-stack. Ela roda em uma VPS
-modesta (Contabo 12 GB), utiliza Ollama para inferência local e escala para
-modelos de fronteira na nuvem sob demanda. Agentes especializados se comportam
-como um time de coworking (Product, Design, Dev, QA, DevSecOps) e criam
-projetos reais na **sua máquina**, via terminal e API, através de um canal
-seguro MCP-sobre-Tailscale.
+**Plataforma de inteligência sobre dados abertos do setor público brasileiro.**
+
+Kratos vincula, analisa e facilita o entendimento e a busca — por semântica e filtros —
+de gastos, salários, cartões corporativos, licitações, empresas, campanhas e servidores
+públicos, nas três esferas de governo (federal, estadual, municipal) e nos três Poderes.
+
+> O mapa de fontes que embasa a plataforma está descrito em
+> [`docs/fontes-de-dados.md`](docs/fontes-de-dados.md) e é a espinha dorsal do catálogo.
+
+---
+
+## Visão
+
+- **Uma tela, de fora a fora.** Interface focada em desktop/laptop, edge-to-edge, com uma
+  única barra superior de navegação + busca textual global. Painéis laterais deslizam para
+  filtros e detalhes; modais abrem documentos e especificações. Glass blur, tema light.
+- **Busca por semântica + filtros.** Encontre datasets e registros por significado
+  (embeddings/pgvector), não só por palavra-chave, combinando com filtros estruturados
+  (ente, Poder, período, fonte, valor).
+- **Conectores reais.** Um framework de conectores integra as fontes públicas — via API
+  (PNCP, Câmara, Querido Diário, SICONFI, dados.gov.br/CKAN, Portal da Transparência) ou
+  via ingestão em lote — normalizando tudo para um modelo comum.
+
+## Arquitetura
 
 ```
-┌────────────────────────── VPS Contabo (12 GB) ─────────────────────────┐
-│  docker-compose:                                                       │
-│   ├─ ollama  (llama3.1:8b-q4 / qwen2.5-coder:7b-q4 / deepseek-coder)   │
-│   ├─ qdrant  (RAG isolado por projeto)                                │
-│   └─ krato-ai (orquestrador, API 7070, CLI)                           │
-│        │                                                               │
-│        ├─ Roteador híbrido  → Ollama local  (rápido/grátis)           │
-│        │                     → Cloud APIs    (Claude / GPT / Gemini)  │
-│        ├─ Memória Global    (SQLite, aprende entre projetos)          │
-│        ├─ Memória Isolada   (Qdrant, um collection por projeto)       │
-│        └─ MCP Client  ──► Tailnet (WireGuard) ──► MCP Server (local)  │
-│                                                                        │
-└────────────────────────────────────────────────────────────────────────┘
-                                                  │
-                                         ┌────────▼────────┐
-                                         │  SUA MÁQUINA    │
-                                         │  krato-mcp      │
-                                         │  (allowlist +   │
-                                         │   sandbox HITL) │
-                                         │  ~/workspace/   │
-                                         │  krato-projects │
-                                         └─────────────────┘
+kratos/
+├── backend/          FastAPI · Python (engenharia de dados, ETL, conectores, busca)
+│   └── app/
+│       ├── catalog/      Registro central de fontes (o "mapa" do documento)
+│       ├── connectors/   Framework + conectores por fonte
+│       ├── search/       Embeddings + busca semântica (pgvector) + filtros
+│       ├── etl/          Ingestão/normalização
+│       ├── api/          Rotas REST
+│       └── models/       Schemas Pydantic + ORM
+├── frontend/         React + Vite + TypeScript + Tailwind (design system Kratos)
+├── infra/            docker-compose (Postgres + pgvector)
+└── docs/             Arquitetura e mapa de fontes
 ```
 
-## Os 5 agentes do coworking
+### Stack
 
-| Agente | Arquétipo | Modelo-padrão | Responsabilidade |
-|---|---|---|---|
-| **Product & Architecture** | Visionário Analítico | `llama3.1:8b-instruct-q4_K_M` | Traduz intenção do humano em PRD + ADRs + stack. |
-| **UX/UI & Design** | Estrategista Criativo | `llama3.1:8b-instruct-q4_K_M` + Vision (cloud quando há imagens) | Emite design tokens + spec de telas/estados. |
-| **Lead Full Stack Developer** | Construtor Lógico | `qwen2.5-coder:7b-instruct-q4_K_M` | Escreve código (Next.js 15, TS strict, Tailwind). |
-| **QA & Testing** | Inquisidor | `deepseek-coder-v2:lite` | Roda typecheck/tests/lint, emite relatório. Loop Evaluator-Optimizer. |
-| **DevSecOps** | Guardião | `llama3.1:8b-instruct-q4_K_M` | SCA (npm audit), secrets scan, valida Docker + CI. |
+| Camada        | Tecnologia |
+|---------------|------------|
+| Backend       | Python 3.11, FastAPI, httpx (async), Pydantic v2, SQLAlchemy |
+| Banco         | PostgreSQL 16 + `pgvector` |
+| Busca         | Embeddings (sentence-transformers, com fallback TF-IDF offline) + busca vetorial |
+| Frontend      | React 18, Vite, TypeScript, TailwindCSS, framer-motion, Recharts, lucide-react |
+| Infra         | Docker Compose |
 
-Os agentes trocam artefatos via um **blackboard** (não via chat), o que mantém
-a precisão do LLM estável mesmo em sessões longas.
+## Como rodar
 
-## Memória em duas camadas
-
-- **RAG isolado por projeto** (Qdrant): cada projeto tem um `collection` próprio.
-  Chunks são gerados com sensibilidade sintática (funções, exports, blocos MD).
-  Nada vaza entre projetos.
-- **Memória global** (SQLite `data/krato.db`): ao fim de cada sessão, um agente
-  observador destila *preferences*, *patterns*, *rules* e *lessons* do humano
-  (actorId). Esses fatos são injetados como **preâmbulo** em todos os agentes
-  em sessões futuras — é o *Portfólio de Contexto Pessoal*.
-
-## Execução remota segura (MCP + Tailscale)
-
-A VPS **não** tem acesso irrestrito à sua máquina. O caminho é:
-
-1. Você instala o Tailscale nas duas pontas.
-2. Roda `krato-mcp` (em `mcp-server/`) na sua estação, como usuário comum (não
-   `root`), com um token compartilhado e um `MCP_WORKSPACE` sandboxeado.
-3. A VPS fala com o MCP server via JSON-RPC HTTP usando o IP Tailscale.
-4. Todo comando passa por uma **allowlist**; comandos destrutivos exigem
-   aprovação humana (HITL).
-5. Path traversal é bloqueado — tudo é resolvido dentro do workspace.
-
-Veja [`src/execution/policy.ts`](src/execution/policy.ts) e
-[`mcp-server/src/index.ts`](mcp-server/src/index.ts).
-
-## Setup rápido
-
-> Rota recomendada: **GitHub Actions + SSH** — veja
-> [`docs/deploy-github-actions.md`](docs/deploy-github-actions.md) para o
-> passo-a-passo auditado ponta-a-ponta. O resumo manual está abaixo.
-
-### 1. Na VPS Contabo
+### 1. Banco de dados
 
 ```bash
-git clone https://github.com/dev-vra/krato-ai.git
-cd krato-ai
-cp .env.example .env
-# edite .env: CLOUD_API_KEY, MCP_URL (tailscale IP da sua máquina), MCP_TOKEN
-
-docker compose up -d ollama qdrant
-./scripts/bootstrap-models.sh   # baixa os modelos sweet-spot
-docker compose up -d krato-ai
+cd infra
+docker compose up -d        # Postgres + pgvector na porta 5432
 ```
 
-A API sobe em `http://127.0.0.1:7070`. Exponha apenas via Tailnet em produção.
-
-### 2. Na sua máquina local (MCP server)
+### 2. Backend
 
 ```bash
-cd mcp-server
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+cp ../.env.example .env
+uvicorn app.main:app --reload --port 8000
+# Docs interativas: http://localhost:8000/docs
+```
+
+### 3. Frontend
+
+```bash
+cd frontend
 npm install
-npm run build
-export KRATO_MCP_TOKEN="o-mesmo-token-do-.env-da-vps"
-export KRATO_MCP_WORKSPACE="$HOME/workspace/krato-projects"
-node dist/index.js
+npm run dev                 # http://localhost:5173
 ```
 
-O MCP server agora ouve em `:8787` (apenas via Tailnet — use ACLs do Tailscale
-para restringir à VPS específica).
+O frontend consome o backend em `http://localhost:8000` (configurável em `VITE_API_URL`).
+Sem backend disponível, a UI cai para dados mock — assim é possível ver a experiência
+completa mesmo antes de subir a stack de dados.
 
-### 3. Uso
+## Fontes de dados integradas
 
-**Via CLI** (na VPS ou localmente com `KRATO_*` env apontando para a VPS):
+Categorias cobertas pelo catálogo (ver `backend/app/catalog/sources.py`):
 
-```bash
-npm run build
-./dist/cli.js health
-./dist/cli.js run \
-  --actor vra \
-  --goal "SaaS de gestão de tarefas com autenticação e billing" \
-  --input "Multi-tenant, free tier + planos Pro. Onboarding passo a passo." \
-  --image ~/mockups/dashboard.png
-```
+- **Federal / Executivo** — Portal da Transparência (CGU), SIAFI/SIOP (via consolidadores)
+- **Contratações** — PNCP, ComprasNet, CEIS/CNEP/CEPIM/CEAF, CNPJ (Receita)
+- **Legislativo** — Câmara dos Deputados (CEAP), Senado (CEAPS)
+- **Judiciário / Eleições** — CNJ/DataJud, TSE (financiamento de campanha)
+- **Estados** — 26 estados + DF (portais de transparência)
+- **Capitais** — 27 capitais (portais municipais)
+- **Consolidadores** — SICONFI, dados.gov.br, Mapa Brasil Transparente
+- **Bases para escala** — Querido Diário, Base dos Dados, Serenata de Amor
 
-**Via API REST**:
+## Status
 
-```bash
-curl -X POST http://127.0.0.1:7070/runs \
-  -H 'content-type: application/json' \
-  -d '{
-    "actorId": "vra",
-    "goal": "Landing page com captura de lead e integração HubSpot",
-    "initialInput": "Hero com vídeo, benefícios, social proof, FAQ"
-  }'
-```
-
-## Modelos suportados (Ollama)
-
-Padrão otimizado para 12 GB RAM (quantizações Q4_K_M):
-
-- `llama3.1:8b-instruct-q4_K_M` — raciocínio geral, roteamento
-- `qwen2.5-coder:7b-instruct-q4_K_M` — código
-- `deepseek-coder-v2:16b-lite-instruct-q4_K_M` — avaliação independente (QA)
-- `nomic-embed-text` — embeddings para o RAG
-- **Alternativa PT-BR**: `capivara:7b-q4_K_M` / `mythos:7b` (configure via
-  `KRATO_MODEL_ROUTER` no `.env`)
-
-Se `CLOUD_API_KEY` estiver setada, o router escala automaticamente para a
-nuvem quando:
-- o prompt tem imagens (wireframes/Figma)
-- a tarefa tem complexidade alta (arquitetura, refatoração global)
-- o prompt passa de `CLOUD_ESCALATE_ON_TOKENS` tokens
-- houve `CLOUD_ESCALATE_ON_FAILURES` falhas locais consecutivas
-
-## Observabilidade
-
-Logs estruturados via `pino`. Cada evento de agente é persistido em
-`events` (SQLite), com `session_id` + `agent` + `payload`. Consulta rápida:
-
-```bash
-sqlite3 data/krato.db \
-  "SELECT agent, kind, created_at FROM events
-   WHERE session_id='<id>' ORDER BY created_at;"
-```
-
-## Estrutura
-
-```
-src/
-├── agents/          # product, design, developer, qa, devsecops
-├── orchestrator/    # graph (state machine) + blackboard
-├── llm/             # ollama, cloud, router híbrido
-├── memory/          # rag (Qdrant), global (SQLite), vector client
-├── execution/       # mcp-client + policy (allowlist/HITL)
-├── api/server.ts    # Fastify
-└── cli.ts           # CLI commander
-
-mcp-server/          # daemon para a máquina local do dev
-scripts/             # utilitários (bootstrap-models etc.)
-```
-
-## Limitações conhecidas do MVP
-
-- O streaming SSE do `/runs/:id/stream` está como placeholder; exige um broker
-  (Redis/NATS) para produção real.
-- O scan de segredos usa apenas heurística via `npm audit`; integrações com
-  Gitleaks/TruffleHog ficam para um próximo ciclo.
-- O scaffold inicial assume Next.js; outros templates devem virar ADRs
-  selecionáveis pelo Product Agent.
-- O chunker sintático do RAG usa regex; para casos complexos, trocar por um
-  parser TS real (tree-sitter) é o caminho.
-
-## Licença
-
-MIT.
+Fundação da plataforma. Conectores das APIs públicas sem autenticação já implementados;
+fontes que exigem token (Portal da Transparência) ou scraping (portais estaduais/municipais)
+entram como definições no catálogo com adaptadores prontos para configuração.
